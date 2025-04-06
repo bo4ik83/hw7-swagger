@@ -1,12 +1,13 @@
-const sortOrderList = ['asc', 'desc'];
+const parseSortParams = (query) => {
+  const allowedSortBy = ['name'];
+  const allowedSortOrder = ['asc', 'desc'];
 
-export function parseSortParams({ sortBy, sortOrder }, sortByList) {
-  const parsedSortOrder = sortOrderList.includes(sortOrder)
-    ? sortOrder
-    : sortOrderList[0];
-  const parsedSortBy = sortByList.includes(sortBy) ? sortBy : '_id';
-  return {
-    sortBy: parsedSortBy,
-    sortOrder: parsedSortOrder,
-  };
-}
+  const sortBy = allowedSortBy.includes(query.sortBy) ? query.sortBy : 'name';
+  const sortOrder = allowedSortOrder.includes(query.sortOrder)
+    ? query.sortOrder
+    : 'asc';
+
+  return { sortBy, sortOrder };
+};
+
+export default parseSortParams;

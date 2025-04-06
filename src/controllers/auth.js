@@ -1,89 +1,170 @@
-import {
-  register,
-  login,
-  refreshSession,
-  logout,
-  requestResetToken,
-  resetPassword,
-} from '../services/auth.js';
+import createHttpError from 'http-errors';
+import authService from '../services/auth.js';
+import jwt from 'jsonwebtoken';
+import User from '../db/models/user.js';
+import sendMail from '../utils/sendMail.js';
 
-export async function registerController(req, res) {
-  const data = await register(req.body);
+import { getOAuthUrl, validateCode } from '../utils/googleOAuth.js';
+
+const COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
+
+const register = async (req, res) => {
+  const { name, email, password } = req.body;
+
+  const existingUser = await authService.findUserByEmail(email);
+  if (existingUser) {
+    throw createHttpError(409, 'Email in use');
+  }
+
+  const newUser = await authService.createUser({ name, email, password });
 
   res.status(201).json({
     status: 201,
     message: 'Successfully registered a user!',
-    data,
-  });
-}
-
-function setupSession(res, session) {
-  res.cookie('refreshToken', session.refreshToken, {
-    httpOnly: true,
-    expires: session.refreshTokenValidUntil,
-  });
-  res.cookie('sessionId', session._id, {
-    httpOnly: true,
-    expires: session.refreshTokenValidUntil,
-  });
-}
-
-export async function loginController(req, res) {
-  const session = await login(req.body);
-
-  setupSession(res, session);
-
-  res.json({
-    status: 200,
-    message: 'Successfully logged in an user!',
     data: {
-      accessToken: session.accessToken,
+      id: newUser._id,
+      name: newUser.name,
+      email: newUser.email,
     },
   });
-}
+};
 
-export async function refreshSessionController(req, res) {
-  const session = await refreshSession({
-    _id: req.cookies.sessionId,
-    refreshToken: req.cookies.refreshToken,
+const login = async (req, res) => {
+  const { email, password } = req.body;
+  const { accessToken, refreshToken } = await authService.loginUser({
+    email,
+    password,
   });
 
-  setupSession(res, session);
+  res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: COOKIE_MAX_AGE,
+  });
 
-  res.json({
+  res.status(200).json({
+    status: 200,
+    message: 'Successfully logged in a user!',
+    data: { accessToken },
+  });
+};
+
+const refresh = async (req, res) => {
+  const { refreshToken: oldRefreshToken } = req.cookies;
+  if (!oldRefreshToken) {
+    throw createHttpError(401, 'Refresh token missing');
+  }
+
+  const { accessToken, refreshToken } = await authService.refreshSession(
+    oldRefreshToken,
+  );
+
+  res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: COOKIE_MAX_AGE,
+  });
+
+  res.status(200).json({
     status: 200,
     message: 'Successfully refreshed a session!',
-    data: {
-      accessToken: session.accessToken,
-    },
+    data: { accessToken },
   });
-}
+};
 
-export async function logoutController(req, res) {
-  if (req.cookies.sessionId) {
-    await logout(req.cookies.sessionId);
+const logout = async (req, res) => {
+  const { refreshToken } = req.cookies;
+  if (!refreshToken) {
+    throw createHttpError(401, 'Not authenticated');
   }
-  res.clearCookie('sessionId');
-  res.clearCookie('refreshToken');
+
+  await authService.logoutUser(refreshToken);
+
+  res.clearCookie('refreshToken', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+  });
 
   res.status(204).send();
-}
+};
 
-export async function requestResetEmailController(req, res) {
-  await requestResetToken(req.body.email);
-  res.json({
-    message: 'Reset password email was successfully sent!',
+const sendResetEmail = async (req, res) => {
+  const { email } = req.body;
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw createHttpError(404, 'User not found!');
+  }
+
+  const token = jwt.sign({ email }, process.env.JWT_SECRET, {
+    expiresIn: '5m',
+  });
+
+  const resetLink = `${process.env.APP_DOMAIN}/reset-password?token=${token}`;
+
+  await sendMail({
+    to: email,
+    subject: 'Reset Password',
+    html: `<p>Click the link below to reset your password:</p>
+           <a href="${resetLink}">${resetLink}</a>`,
+  });
+
+  res.status(200).json({
     status: 200,
+    message: 'Reset password email has been successfully sent.',
     data: {},
   });
-}
+};
 
-export async function resetPasswordController(req, res) {
-  await resetPassword(req.body);
+const resetPassword = async (req, res) => {
+  const { token, password } = req.body;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findOne({ email: decoded.email });
+
+    if (!user) {
+      throw createHttpError(404, 'User not found!');
+    }
+
+    await authService.resetUserPassword(user, password);
+
+    res.status(200).json({
+      status: 200,
+      message: 'Password has been successfully reset.',
+      data: {},
+    });
+  } catch {
+    throw createHttpError(401, 'Token is expired or invalid.');
+  }
+};
+
+const getOAuthUrlController = async (req, res) => {
+  const url = getOAuthUrl();
 
   res.json({
     status: 200,
-    message: 'Password was successfully reset!',
-    data: {},
+    message: 'Successfuly get OAuth url',
+    data: {
+      oauth_url: url,
+    },
   });
-}
+};
+
+const confirmOAuthController = async (req, res) => {
+  const ticket = await validateCode(req.body.code);
+  await authService.loginOrRegister(ticket.payload.email, ticket.payload.name);
+
+  res.end();
+};
+
+export default {
+  register,
+  login,
+  refresh,
+  logout,
+  sendResetEmail,
+  resetPassword,
+  getOAuthUrlController,
+  confirmOAuthController,
+};
