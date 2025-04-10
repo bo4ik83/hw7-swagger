@@ -14,7 +14,7 @@ tags:
     description: Operations about contacts.
 servers:
   - url: http://localhost:3000
-  - url: https://contacts-app-swagger-z45b.onrender.com
+  - url: https://nodejs-hw-mongodb-7rih.onrender.com
 paths:
   /contacts:
     get:
